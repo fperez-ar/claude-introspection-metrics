@@ -626,7 +626,7 @@ def build_report_html(sessions: list[dict], conv_dir_name: str) -> str:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Code — Conversation Metrics</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
   :root {{
     --bg:#0f1117;--surface:#1a1d27;--surface2:#22263a;--border:#2e3347;
@@ -743,6 +743,7 @@ def build_report_html(sessions: list[dict], conv_dir_name: str) -> str:
   }}
   .chart-overlay-header{{display:flex;align-items:center;justify-content:space-between}}
   .chart-overlay-header h3{{font-size:14px;font-weight:600;color:var(--text)}}
+  .overlay-hint{{font-size:11px;color:var(--muted);margin-left:auto;margin-right:12px}}
   .chart-overlay-wrap{{flex:1;position:relative}}
   /* session picker modal */
   .picker-overlay{{
@@ -956,6 +957,7 @@ def build_report_html(sessions: list[dict], conv_dir_name: str) -> str:
   <div class="chart-overlay-inner" onclick="event.stopPropagation()">
     <div class="chart-overlay-header">
       <h3 id="overlayTitle"></h3>
+      <span class="overlay-hint">Click any element to open the conversation</span>
       <button class="btn-icon" onclick="closeExpand()">✕ close</button>
     </div>
     <div class="chart-overlay-wrap"><canvas id="overlayCanvas"></canvas></div>
@@ -1265,7 +1267,7 @@ function computeTokenHist(ss) {{
 function scatterData(ss, xKey, yKey) {{
   return ss
     .filter(s=>s[xKey]>0&&s[yKey]>0)
-    .map(s=>({{x:s[xKey], y:s[yKey], label:s.title||s.session_id.slice(0,8)}}));
+    .map(s=>({{x:s[xKey], y:s[yKey], label:s.title||s.session_id.slice(0,8), sid:s.session_id}}));
 }}
 
 const scatterOpts = (xlabel, ylabel) => ({{
@@ -1364,20 +1366,35 @@ function updateDeepDive(ss) {{
 
 // ── expand to fullscreen ───────────────────────────────────────────────────
 let overlayChart = null;
+let overlaySourceId = null;
+const chartClickHandlers = {{}};
 
 function expandChart(canvasId, title) {{
   const src = Chart.getChart(canvasId);
   if(!src) return;
+  overlaySourceId = canvasId;
   document.getElementById('overlayTitle').textContent = title;
   document.getElementById('chartOverlay').classList.add('open');
   if(overlayChart) {{ overlayChart.destroy(); overlayChart = null; }}
+  const handler = chartClickHandlers[canvasId];
   const cfg = {{
     type: src.config.type,
     data: JSON.parse(JSON.stringify(src.data)),
     options: JSON.parse(JSON.stringify(src.options))
   }};
-  if(src.config.options?.onClick) cfg.options.onClick = src.config.options.onClick;
+  cfg.options.onClick = handler || null;
+  cfg.options.onHover = (e, els) => {{
+    if(e?.native?.target) e.native.target.style.cursor = els.length ? 'pointer' : 'default';
+  }};
   overlayChart = new Chart(document.getElementById('overlayCanvas'), cfg);
+  overlayChart.canvas.style.cursor = 'pointer';
+  // fallback: bind native click in case options.onClick is dropped by Chart.js
+  if(handler) {{
+    overlayChart.canvas.onclick = (ev) => {{
+      const els = overlayChart.getElementsAtEventForMode(ev,'nearest',{{intersect:true}},false);
+      if(els.length) handler(ev, els);
+    }};
+  }}
 }}
 
 function closeExpand(e) {{
@@ -1490,22 +1507,12 @@ function attachClickHandlers() {{
   ids.forEach(id=>{{
     const ch=Chart.getChart(id);
     if(!ch) return;
-    ch.options.onClick=makeClickHandler(id);
-    ch.options.plugins=ch.options.plugins||{{}};
-    ch.options.plugins.tooltip=ch.options.plugins.tooltip||{{}};
+    const h=makeClickHandler(id);
+    chartClickHandlers[id]=h;
+    ch.options.onClick=h;
     // make cursor pointer on hover
     ch.canvas.style.cursor='pointer';
-    ch.update('none');
   }});
-}}
-
-// ── scatter data with sid ──────────────────────────────────────────────────
-// override scatterData to include session_id for direct navigation
-const _scatterData = scatterData;
-function scatterData(ss, xKey, yKey) {{
-  return ss
-    .filter(s=>s[xKey]>0&&s[yKey]>0)
-    .map(s=>({{x:s[xKey],y:s[yKey],label:s.title||s.session_id.slice(0,8),sid:s.session_id}}));
 }}
 
 // ── deep dive text search ──────────────────────────────────────────────────
