@@ -173,6 +173,7 @@
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('overview',this)">Overview</button>
   <button class="tab-btn" onclick="switchTab('deepdive',this)">Deep Dive</button>
+  <button class="tab-btn" onclick="switchTab('regen',this)">Regenerate</button>
 </div>
 
 <div id="tab-overview" class="tab-pane active">
@@ -330,6 +331,36 @@
 </div>
 </div><!-- /tab-deepdive -->
 
+<div id="tab-regen" class="tab-pane">
+  <div style="padding:24px 32px;max-width:780px">
+    <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">Filter projects by regex</h3>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
+      Regex matches against project display name. Saved to <code>localStorage</code>; applied on every load.
+    </p>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <input id="regenRegex" type="text" placeholder="e.g. ^work-|test"
+        style="flex:1;min-width:280px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;outline:none;font-family:monospace">
+      <select id="regenMode" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px;outline:none;cursor:pointer">
+        <option value="hide">Hide matching</option>
+        <option value="keep">Keep only matching</option>
+      </select>
+      <button class="btn-icon" onclick="applyRegenFilter()" style="padding:8px 14px">Apply</button>
+      <button class="btn-icon" onclick="clearRegenFilter()" style="padding:8px 14px">Clear</button>
+    </div>
+    <div id="regenError" style="color:#ef4444;font-size:12px;margin-bottom:12px;display:none"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:20px">
+      <div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Included <span id="regenIncCount"></span></div>
+        <div id="regenIncluded" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;max-height:380px;overflow-y:auto;font-size:12px"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Excluded <span id="regenExcCount"></span></div>
+        <div id="regenExcluded" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;max-height:380px;overflow-y:auto;font-size:12px"></div>
+      </div>
+    </div>
+  </div>
+</div><!-- /tab-regen -->
+
 <!-- fullscreen chart overlay -->
 <div class="chart-overlay" id="chartOverlay" onclick="closeExpand(event)">
   <div class="chart-overlay-inner" onclick="event.stopPropagation()">
@@ -358,7 +389,9 @@ const DATA = __DATA_JSON__;
 const COLORS = ['#d97706','#6366f1','#10b981','#f59e0b','#3b82f6','#ec4899','#14b8a6','#8b5cf6','#f97316','#06b6d4','#a855f7','#ef4444','#84cc16','#0ea5e9','#fb7185'];
 const GC = { gridColor:'#1e2335', tickColor:'#64748b' };
 
-let filteredSessions = DATA.sessions;
+const _allSessions = DATA.sessions.slice();
+let activeSessions = _allSessions;
+let filteredSessions = activeSessions;
 let sortKey = 'start_time', sortAsc = false;
 
 function fmt(n) { return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':String(n); }
@@ -574,14 +607,16 @@ function sortBy(key) {
 }
 
 function populateModelDropdown() {
-  const models=[...new Set(DATA.sessions.flatMap(s=>s.models||[]))].sort();
   const sel=document.getElementById('fModel');
+  // keep first "Any model" option, drop rest
+  while(sel.options.length>1) sel.remove(1);
+  const models=[...new Set(activeSessions.flatMap(s=>s.models||[]))].sort();
   models.forEach(m=>{ const o=document.createElement('option'); o.value=m; o.textContent=m; sel.appendChild(o); });
 }
 
 function applyGlobalFilter() {
   const pk=document.getElementById('globalProject').value;
-  filteredSessions=pk?DATA.sessions.filter(s=>s.project_key===pk):DATA.sessions;
+  filteredSessions=pk?activeSessions.filter(s=>s.project_key===pk):activeSessions;
   updateKPIs(filteredSessions);
   updateCharts(filteredSessions);
   renderTable();
@@ -937,8 +972,101 @@ function ddSearchSessions() {
   }).join('');
 }
 
-populateModelDropdown();
-applyGlobalFilter();
+// ── regen tab: regex project filter ────────────────────────────────────────
+const REGEN_KEY = 'claudeReport.regenFilter';
+
+function loadRegenFilter() {
+  try { return JSON.parse(localStorage.getItem(REGEN_KEY)) || {pattern:'', mode:'hide'}; }
+  catch(e) { return {pattern:'', mode:'hide'}; }
+}
+function saveRegenFilter(f) { localStorage.setItem(REGEN_KEY, JSON.stringify(f)); }
+
+function computeProjectSplit(pattern, mode) {
+  const all = Object.keys(DATA.projects);
+  if(!pattern) return {included:all, excluded:[]};
+  let re;
+  try { re = new RegExp(pattern); }
+  catch(e) { return {error:e.message, included:all, excluded:[]}; }
+  const inc=[], exc=[];
+  all.forEach(k=>{
+    const name = DATA.projects[k];
+    const hit = re.test(name);
+    const keep = mode==='keep' ? hit : !hit;
+    (keep?inc:exc).push(k);
+  });
+  return {included:inc, excluded:exc};
+}
+
+function renderRegenLists(split) {
+  const renderList = (keys, el) => {
+    el.innerHTML = keys.length
+      ? keys.map(k=>`<div style="padding:4px 6px;border-bottom:1px solid var(--border)">${DATA.projects[k]||k}</div>`).join('')
+      : '<div style="padding:8px;color:var(--muted)">none</div>';
+  };
+  renderList(split.included, document.getElementById('regenIncluded'));
+  renderList(split.excluded, document.getElementById('regenExcluded'));
+  document.getElementById('regenIncCount').textContent = `(${split.included.length})`;
+  document.getElementById('regenExcCount').textContent = `(${split.excluded.length})`;
+}
+
+function rebuildProjectDropdown(includedKeys) {
+  const sel = document.getElementById('globalProject');
+  const prev = sel.value;
+  // preserve "All projects" first option, drop rest
+  while(sel.options.length>1) sel.remove(1);
+  const sorted = includedKeys
+    .map(k=>[k, DATA.projects[k]||k])
+    .sort((a,b)=>a[1].localeCompare(b[1]));
+  sorted.forEach(([k,name])=>{
+    const o=document.createElement('option');
+    o.value=k; o.textContent=name;
+    sel.appendChild(o);
+  });
+  sel.options[0].textContent = `All projects (${includedKeys.length})`;
+  if(includedKeys.includes(prev)) sel.value = prev; else sel.value = '';
+}
+
+function applyRegenState(state) {
+  const errEl = document.getElementById('regenError');
+  const split = computeProjectSplit(state.pattern, state.mode);
+  if(split.error) {
+    errEl.style.display='block';
+    errEl.textContent = 'Invalid regex: '+split.error;
+  } else {
+    errEl.style.display='none';
+  }
+  const incSet = new Set(split.included);
+  activeSessions = _allSessions.filter(s=>incSet.has(s.project_key));
+  rebuildProjectDropdown(split.included);
+  populateModelDropdown();
+  applyGlobalFilter();
+  renderRegenLists(split);
+}
+
+function applyRegenFilter() {
+  const state = {
+    pattern: document.getElementById('regenRegex').value.trim(),
+    mode: document.getElementById('regenMode').value
+  };
+  saveRegenFilter(state);
+  applyRegenState(state);
+}
+
+function clearRegenFilter() {
+  document.getElementById('regenRegex').value = '';
+  document.getElementById('regenMode').value = 'hide';
+  saveRegenFilter({pattern:'', mode:'hide'});
+  applyRegenState({pattern:'', mode:'hide'});
+}
+
+function initRegenTab() {
+  const state = loadRegenFilter();
+  document.getElementById('regenRegex').value = state.pattern;
+  document.getElementById('regenMode').value = state.mode;
+  applyRegenState(state);
+}
+
+initRegenTab();
 initChartActions();
 attachClickHandlers();
 </script>

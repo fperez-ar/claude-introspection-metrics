@@ -640,6 +640,8 @@ def main():
     parser = argparse.ArgumentParser(description="Claude Code conversation metrics report")
     parser.add_argument("project", nargs="?", help="Pre-filter by project path (default: all)")
     parser.add_argument("--output", default="claude_report.html", help="Output HTML file")
+    parser.add_argument("--no-fetch", action="store_true",
+                        help="Skip writing per-session conversation HTMLs; reuse existing folder")
     args = parser.parse_args()
 
     output_path = os.path.abspath(args.output)
@@ -658,21 +660,27 @@ def main():
     projects = len({s["project_key"] for s in sessions})
     print(f"Found {len(sessions)} sessions across {projects} projects", file=sys.stderr)
 
-    # write per-session conversation HTMLs
-    os.makedirs(conv_dir, exist_ok=True)
-    print(f"Writing conversation logs to {conv_dir}/", file=sys.stderr)
-    for i, session in enumerate(sessions, 1):
-        try:
-            messages = load_messages(session["jsonl_path"])
-            turns = extract_turns(messages)
-            conv_html = render_conversation_html(session, turns)
-            conv_path = os.path.join(conv_dir, f"{session['session_id']}.html")
-            with open(conv_path, "w") as f:
-                f.write(conv_html)
-        except Exception as e:
-            print(f"  Warning: {session['session_id']}: {e}", file=sys.stderr)
-        if i % 50 == 0:
-            print(f"  {i}/{len(sessions)} done", file=sys.stderr)
+    if args.no_fetch:
+        if not os.path.isdir(conv_dir) or not any(f.endswith(".html") for f in os.listdir(conv_dir)):
+            print(f"Error: --no-fetch requires existing conversation folder at {conv_dir}/", file=sys.stderr)
+            sys.exit(1)
+        print(f"Reusing existing conversation logs in {conv_dir}/", file=sys.stderr)
+    else:
+        # write per-session conversation HTMLs
+        os.makedirs(conv_dir, exist_ok=True)
+        print(f"Writing conversation logs to {conv_dir}/", file=sys.stderr)
+        for i, session in enumerate(sessions, 1):
+            try:
+                messages = load_messages(session["jsonl_path"])
+                turns = extract_turns(messages)
+                conv_html = render_conversation_html(session, turns)
+                conv_path = os.path.join(conv_dir, f"{session['session_id']}.html")
+                with open(conv_path, "w") as f:
+                    f.write(conv_html)
+            except Exception as e:
+                print(f"  Warning: {session['session_id']}: {e}", file=sys.stderr)
+            if i % 50 == 0:
+                print(f"  {i}/{len(sessions)} done", file=sys.stderr)
 
     # write main report
     report_html = build_report_html(sessions, conv_dir_name)
