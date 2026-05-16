@@ -1,0 +1,2 @@
+# claude_metrics.py uses Python standard library only.
+# Python >= 3.10 required (uses PEP 604 union types).
