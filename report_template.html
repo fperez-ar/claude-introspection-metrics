@@ -33,6 +33,11 @@
   .charts-grid.wide{grid-template-columns:2fr 1fr}
   .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px}
   .chart-card h3{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:16px}
+  .chart-card.collapsible > h3{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px}
+  .chart-card.collapsible > h3::before{content:'▾';display:inline-block;transition:transform .15s;font-size:13px;color:var(--muted)}
+  .chart-card.collapsible.collapsed > h3{margin-bottom:0}
+  .chart-card.collapsible.collapsed > h3::before{transform:rotate(-90deg)}
+  .chart-card.collapsible.collapsed > .chart-wrap{display:none}
   .chart-wrap{position:relative;height:220px}
   .chart-wrap.tall{height:300px}
   section{padding:0 32px 32px}
@@ -154,6 +159,14 @@
   .picker-row-title{font-size:13px;color:var(--text)}
   .picker-row-meta{font-size:11px;color:var(--muted)}
   .picker-empty{padding:24px;text-align:center;color:var(--muted);font-size:13px}
+  .h3-sub{font-weight:400;color:#64748b}
+  .charts-grid.one-col{grid-template-columns:1fr}
+  .charts-grid.pt0{padding-top:0}
+  .section-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+  .regen-list{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;max-height:380px;overflow-y:auto;font-size:12px}
+  .btn-icon-lg{padding:8px 14px}
+  #pricingTable th{padding:8px 6px}
+  #pricingTable th.num{text-align:right}
   @media(max-width:800px){
     .charts-grid,.charts-grid.wide{grid-template-columns:1fr}
     .header-top{flex-direction:column;align-items:flex-start}
@@ -180,7 +193,7 @@
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('overview',this)">Overview</button>
   <button class="tab-btn" onclick="switchTab('deepdive',this)">Deep Dive</button>
-  <button class="tab-btn" onclick="switchTab('regen',this)">Regenerate</button>
+  <button class="tab-btn" onclick="switchTab('regen',this)">Options</button>
 </div>
 
 <div id="tab-overview" class="tab-pane active">
@@ -197,19 +210,19 @@
   <div class="chart-card"><h3>Sessions &amp; Tokens over Time</h3><div class="chart-wrap"><canvas id="timelineChart"></canvas></div></div>
   <div class="chart-card"><h3>Tokens by Project</h3><div class="chart-wrap"><canvas id="projectChart"></canvas></div></div>
 </div>
-<div class="charts-grid" style="grid-template-columns:1fr">
-  <div class="chart-card"><h3>Estimated Cost by Project <span style="font-weight:400;color:#64748b">(USD; rates editable in Regenerate tab)</span></h3><div class="chart-wrap"><canvas id="costProjectChart"></canvas></div></div>
+<div class="charts-grid one-col">
+  <div class="chart-card"><h3>Estimated Cost by Project <span class="h3-sub">(USD; rates editable in Regenerate tab)</span></h3><div class="chart-wrap"><canvas id="costProjectChart"></canvas></div></div>
 </div>
 <div class="charts-grid">
   <div class="chart-card"><h3>Top Tools Used</h3><div class="chart-wrap tall"><canvas id="toolsChart"></canvas></div></div>
   <div class="chart-card"><h3>Token Mix (Input / Output / Cache)</h3><div class="chart-wrap"><canvas id="tokenMixChart"></canvas></div></div>
 </div>
-<div class="charts-grid" style="grid-template-columns:1fr">
-  <div class="chart-card"><h3>Sessions &amp; Avg Tokens per Session — by Model &nbsp;<span style="font-weight:400;color:#64748b">(green = agentic: Agent tool OR &gt;35 tools OR TaskCreate)</span></h3><div class="chart-wrap"><canvas id="modelChart"></canvas></div></div>
+<div class="charts-grid one-col">
+  <div class="chart-card"><h3>Sessions &amp; Avg Tokens per Session — by Model &nbsp;<span class="h3-sub">(green = agentic: Agent tool OR &gt;35 tools OR TaskCreate)</span></h3><div class="chart-wrap"><canvas id="modelChart"></canvas></div></div>
 </div>
 
-<div class="charts-grid" style="grid-template-columns:1fr">
-  <div class="chart-card"><h3>Top Tags <span style="font-weight:400;color:#64748b">(stored in this browser's localStorage)</span></h3><div class="chart-wrap"><canvas id="tagsChart"></canvas></div></div>
+<div class="charts-grid one-col">
+  <div class="chart-card collapsible collapsed" id="tagsCard"><h3 onclick="toggleChartCard('tagsCard','tagsChart')">Top Tags <span class="h3-sub">(stored in this browser's localStorage)</span></h3><div class="chart-wrap"><canvas id="tagsChart"></canvas></div></div>
 </div>
 
 <section>
@@ -322,25 +335,25 @@
 
 <div class="charts-grid wide" style="padding-top:16px">
   <div class="chart-card">
-    <h3>First Message Length → Total Tokens <span style="font-weight:400;color:#64748b">(prompt complexity vs session size)</span></h3>
+    <h3>First Message Length x Total Tokens <span class="h3-sub">(prompt complexity vs session size)</span></h3>
     <div class="chart-wrap"><canvas id="scatterMsgTokens"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>Total Messages → Tool Uses <span style="font-weight:400;color:#64748b">(chatty vs tool-heavy)</span></h3>
+    <h3>Total Messages x Tool Uses <span class="h3-sub">(chatty vs tool-heavy)</span></h3>
     <div class="chart-wrap"><canvas id="scatterMsgTools"></canvas></div>
   </div>
 </div>
-<div class="charts-grid" style="padding-top:0">
+<div class="charts-grid pt0">
   <div class="chart-card">
-    <h3>First Message Length → Total Messages <span style="font-weight:400;color:#64748b">(prompt size vs session turn count; x ≈ chars / ~tokens)</span></h3>
+    <h3>First Message Length x Total Messages <span class="h3-sub">(prompt size vs session turn count; x ≈ chars / ~tokens)</span></h3>
     <div class="chart-wrap"><canvas id="scatterMsgLenMsgs"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>First Message Tokens (≈) → Total Tokens <span style="font-weight:400;color:#64748b">(approx tokens = chars/4)</span></h3>
+    <h3>First Message Tokens (≈) x Total Tokens <span class="h3-sub">(approx tokens = chars/4)</span></h3>
     <div class="chart-wrap"><canvas id="scatterMsgTokTok"></canvas></div>
   </div>
 </div>
-<div class="charts-grid" style="padding-top:0">
+<div class="charts-grid pt0">
   <div class="chart-card">
     <h3>Activity by Hour of Day</h3>
     <div class="chart-wrap"><canvas id="hourChart"></canvas></div>
@@ -350,19 +363,19 @@
     <div class="chart-wrap"><canvas id="dowChart"></canvas></div>
   </div>
 </div>
-<div class="charts-grid wide" style="padding-top:0">
+<div class="charts-grid wide pt0">
   <div class="chart-card">
-    <h3>Cache Efficiency over Time <span style="font-weight:400;color:#64748b">(cache reads / total input %)</span></h3>
+    <h3>Cache Efficiency over Time <span class="h3-sub">(cache reads / total input %)</span></h3>
     <div class="chart-wrap"><canvas id="cacheEffChart"></canvas></div>
   </div>
   <div class="chart-card">
-    <h3>Token Distribution <span style="font-weight:400;color:#64748b">(sessions per bucket)</span></h3>
+    <h3>Token Distribution <span class="h3-sub">(sessions per bucket)</span></h3>
     <div class="chart-wrap"><canvas id="tokenHistChart"></canvas></div>
   </div>
 </div>
-<div class="charts-grid" style="grid-template-columns:1fr;padding-top:0;padding-bottom:32px">
+<div class="charts-grid one-col pt0" style="padding-bottom:32px">
   <div class="chart-card">
-    <h3>Top Sessions by Estimated Cost <span style="font-weight:400;color:#64748b">(top 30; click bar to open conversation)</span></h3>
+    <h3>Top Sessions by Estimated Cost <span class="h3-sub">(top 30; click bar to open conversation)</span></h3>
     <div class="chart-wrap tall"><canvas id="costSessionChart"></canvas></div>
   </div>
 </div>
@@ -381,18 +394,18 @@
         <option value="hide">Hide matching</option>
         <option value="keep">Keep only matching</option>
       </select>
-      <button class="btn-icon" onclick="applyRegenFilter()" style="padding:8px 14px">Apply</button>
-      <button class="btn-icon" onclick="clearRegenFilter()" style="padding:8px 14px">Clear</button>
+      <button class="btn-icon btn-icon-lg" onclick="applyRegenFilter()">Apply</button>
+      <button class="btn-icon btn-icon-lg" onclick="clearRegenFilter()">Clear</button>
     </div>
     <div id="regenError" style="color:#ef4444;font-size:12px;margin-bottom:12px;display:none"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:20px">
       <div>
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Included <span id="regenIncCount"></span></div>
-        <div id="regenIncluded" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;max-height:380px;overflow-y:auto;font-size:12px"></div>
+        <div class="section-label">Included <span id="regenIncCount"></span></div>
+        <div id="regenIncluded" class="regen-list"></div>
       </div>
       <div>
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Excluded <span id="regenExcCount"></span></div>
-        <div id="regenExcluded" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;max-height:380px;overflow-y:auto;font-size:12px"></div>
+        <div class="section-label">Excluded <span id="regenExcCount"></span></div>
+        <div id="regenExcluded" class="regen-list"></div>
       </div>
     </div>
   </div>
@@ -404,20 +417,20 @@
       Edits persist in <code>localStorage</code> and recompute the Est. Cost KPI, the Cost column, and per-conversation cost panels. First row whose <em>pattern</em> appears in the model id wins; last row is the catch-all.
     </p>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-      <button class="btn-icon" onclick="resetPricingEditor()" style="padding:8px 14px">Reset to defaults</button>
+      <button class="btn-icon btn-icon-lg" onclick="resetPricingEditor()">Reset to defaults</button>
       <span id="pricingStatus" style="font-size:11px;color:var(--muted)"></span>
     </div>
     <div style="overflow-x:auto">
       <table id="pricingTable" style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px">
         <thead>
           <tr style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em">
-            <th style="padding:8px 6px">Label</th>
-            <th style="padding:8px 6px">Pattern</th>
-            <th style="padding:8px 6px;text-align:right">Input</th>
-            <th style="padding:8px 6px;text-align:right">Cache 5m write</th>
-            <th style="padding:8px 6px;text-align:right">Cache 1h write</th>
-            <th style="padding:8px 6px;text-align:right">Cache hit</th>
-            <th style="padding:8px 6px;text-align:right">Output</th>
+            <th style="min-width:180px">Label</th>
+            <th>Pattern</th>
+            <th class="num">Input</th>
+            <th class="num">5min cache write</th>
+            <th class="num">1hr cache write</th>
+            <th class="num">Cache hit</th>
+            <th class="num">Output</th>
           </tr>
         </thead>
         <tbody id="pricingBody"></tbody>
@@ -687,6 +700,16 @@ function updateCharts(ss) {
   modelChart.update();
   const tt=computeTopTags(ss);
   tagsChart.data.labels=tt.map(t=>t[0]); tagsChart.data.datasets[0].data=tt.map(t=>t[1]); tagsChart.update();
+}
+
+// ── collapsible chart card ─────────────────────────────────────────────────
+function toggleChartCard(cardId, chartId) {
+  const card=document.getElementById(cardId);
+  const collapsed=card.classList.toggle('collapsed');
+  if (!collapsed) {
+    const ch=Chart.getChart(chartId);
+    if (ch) requestAnimationFrame(()=>ch.resize());
+  }
 }
 
 // ── advanced panel toggle ──────────────────────────────────────────────────
@@ -1332,12 +1355,12 @@ function renderPricingEditor() {
   const body = document.getElementById('pricingBody');
   body.innerHTML = pricing.map((r, i) => `
     <tr style="border-top:1px solid var(--border)">
-      <td style="padding:6px;color:var(--text)">${escapeHtml(r.label||'')}</td>
+      <td style="padding:6px;color:var(--text);min-width:180px;white-space:nowrap">${escapeHtml(r.label||'')}</td>
       <td style="padding:6px"><input data-i="${i}" data-f="pattern" value="${escapeAttr(r.pattern||'')}"
         style="width:140px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 6px;font-size:12px;font-family:monospace;outline:none"></td>
       ${PRICING_FIELDS.map(f => `
-        <td style="padding:6px;text-align:right"><input type="number" step="0.001" min="0" data-i="${i}" data-f="${f}" value="${r[f] ?? 0}"
-          style="width:90px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 6px;font-size:12px;text-align:right;outline:none"></td>
+        <td style="padding:6px;text-align:right;white-space:nowrap"><input type="number" step="0.001" min="0" data-i="${i}" data-f="${f}" value="${r[f] ?? 0}"
+          style="width:50px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:4px 6px;font-size:12px;text-align:right;outline:none"><span style="margin-left:4px;color:var(--muted);font-size:11px">$/mtok</span></td>
       `).join('')}
     </tr>
   `).join('');
