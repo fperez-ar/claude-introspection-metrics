@@ -382,6 +382,7 @@ def render_conversation_html(session: dict, turns: list[dict]) -> str:
   .chip.active.user{{background:var(--user-border);border-color:var(--user-border)}}
   .chip.active.asst{{background:#334155;border-color:#475569;color:var(--text)}}
   .chip.active.tools{{background:#1a3a2a;border-color:#10b981;color:#10b981}}
+  .chip.active.thinking{{background:#3a1a3a;border-color:#a855f7;color:#a855f7}}
   .divider{{width:1px;height:20px;background:var(--border);flex-shrink:0}}
   .btn-panel{{
     background:var(--surface2);border:1px solid var(--border);color:var(--muted);
@@ -420,7 +421,8 @@ def render_conversation_html(session: dict, turns: list[dict]) -> str:
   .tool-name{{color:var(--accent);font-family:monospace}}
   .unknown-part{{font-size:11px;color:var(--muted);font-family:monospace}}
   /* hide tools class on body */
-  body.hide-tools .tool-block,body.hide-tools .tool-result-block,body.hide-tools .thinking-block{{display:none}}
+  body.hide-tools .tool-block,body.hide-tools .tool-result-block{{display:none}}
+  body.hide-thinking .thinking-block{{display:none}}
   /* side panel */
   .side-panel{{
     width:var(--sp-width);flex-shrink:0;border-left:1px solid var(--border);
@@ -461,6 +463,7 @@ def render_conversation_html(session: dict, turns: list[dict]) -> str:
     <button class="chip user active"  id="chipUser" onclick="toggleChip('user')">User</button>
     <button class="chip asst active"  id="chipAsst" onclick="toggleChip('asst')">Assistant</button>
     <button class="chip tools active" id="chipTools" onclick="toggleChip('tools')">Tools</button>
+    <button class="chip thinking active" id="chipThinking" onclick="toggleChip('thinking')">Thinking</button>
   </div>
   <div class="divider"></div>
   <button class="btn-panel" id="btnPanel" onclick="togglePanel()">⊟ Metrics</button>
@@ -510,7 +513,7 @@ def render_conversation_html(session: dict, turns: list[dict]) -> str:
 
 <script>
 // ── filter chips ───────────────────────────────────────────────────────────
-const chipState = {{user:true, asst:true, tools:true}};
+const chipState = {{user:true, asst:true, tools:true, thinking:true}};
 
 function toggleChip(type) {{
   chipState[type] = !chipState[type];
@@ -522,6 +525,7 @@ function toggleChip(type) {{
 function applyFilters() {{
   // tools = hide/show tool/thinking details blocks via body class
   document.body.classList.toggle('hide-tools', !chipState.tools);
+  document.body.classList.toggle('hide-thinking', !chipState.thinking);
   // message visibility
   document.querySelectorAll('.msg').forEach(m => {{
     const role = m.dataset.role;

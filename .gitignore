@@ -1,5 +1,7 @@
 .DS_Store
-b9rvmlf74.txt
+*.html
+*.txt
+*.csv
 claude_report.html
 claude_report_conversations/
 __pycache__/
