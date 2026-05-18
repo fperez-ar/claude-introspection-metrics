@@ -29,29 +29,22 @@ WORKSPACE_ROOT = os.path.join(CURSOR_ROOT, "workspaceStorage")
 # text length (~4 chars/token English heuristic) so cost charts have a value
 # of the right order of magnitude. Marked as "estimated" in the UI.
 #
-# Rates: USD per 1M tokens. First matching pattern (substring on model id)
-# wins; final empty-pattern entry is fallback. Cursor routes most "default"
-# / "Auto" requests through their own router so the true backing model is
-# unknown — we charge default at a mid-Sonnet rate as a compromise.
-PRICING_DEFAULTS = [
-    {"id": "opus-4-7",     "pattern": "opus-4-7",  "label": "Claude Opus 4.7",     "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
-    {"id": "opus-4-6",     "pattern": "opus-4-6",  "label": "Claude Opus 4.6",     "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
-    {"id": "opus-4",       "pattern": "opus",      "label": "Claude Opus (other)", "input": 15.0, "cache_5m": 18.75, "cache_1h": 30.0, "cache_hit": 1.50, "output": 75.0},
-    {"id": "sonnet-4-6",   "pattern": "sonnet-4-6","label": "Claude Sonnet 4.6",   "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
-    {"id": "sonnet-4-5",   "pattern": "sonnet-4-5","label": "Claude Sonnet 4.5",   "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
-    {"id": "sonnet",       "pattern": "sonnet",    "label": "Claude Sonnet (other)","input":  3.0,"cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
-    {"id": "haiku",        "pattern": "haiku",     "label": "Claude Haiku",        "input":  1.0, "cache_5m":  1.25, "cache_1h":  2.0, "cache_hit": 0.10, "output":  5.0},
-    {"id": "gpt-5",        "pattern": "gpt-5",     "label": "GPT-5",               "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.13, "output": 10.0},
-    {"id": "gpt-4o",       "pattern": "gpt-4o",    "label": "GPT-4o",              "input":  2.5, "cache_5m":  3.13, "cache_1h":  5.0, "cache_hit": 1.25, "output": 10.0},
-    {"id": "gpt-4",        "pattern": "gpt-4",     "label": "GPT-4 (other)",       "input":  2.5, "cache_5m":  3.13, "cache_1h":  5.0, "cache_hit": 1.25, "output": 10.0},
-    {"id": "gemini-2-5",   "pattern": "gemini-2.5","label": "Gemini 2.5 Pro",      "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.31, "output": 10.0},
-    {"id": "gemini",       "pattern": "gemini",    "label": "Gemini (other)",      "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.31, "output": 10.0},
-    {"id": "grok",         "pattern": "grok",      "label": "Grok",                "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.75, "output": 15.0},
-    {"id": "kimi",         "pattern": "kimi",      "label": "Kimi K2",             "input":  0.60,"cache_5m":  0.75, "cache_1h":  1.2, "cache_hit": 0.15, "output":  2.5},
-    {"id": "composer-2",   "pattern": "composer-2","label": "Composer 2 (Cursor)", "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.13, "output": 10.0},
-    {"id": "composer",     "pattern": "composer",  "label": "Composer (Cursor)",   "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.13, "output": 10.0},
-    {"id": "default",      "pattern": "",          "label": "Auto/default (est.)", "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
-]
+# Rates loaded from pricing.json. Cursor routes "default"/"Auto" through its
+# own router so the backing model is unknown — Cursor publishes a flat
+# pool price for Auto + Composer 2 ($1.25 in / $6 out / $0.25 cache read).
+PRICING_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pricing.json")
+
+
+def load_pricing(vendors: tuple[str, ...] | None = None) -> list[dict]:
+    with open(PRICING_PATH) as f:
+        entries = json.load(f)["entries"]
+    if vendors:
+        vs = set(vendors)
+        entries = [e for e in entries if e.get("vendor") in vs]
+    return entries
+
+
+PRICING_DEFAULTS = load_pricing()
 
 
 # ── token estimation ───────────────────────────────────────────────────────

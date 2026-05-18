@@ -24,22 +24,27 @@ SOURCES = {
     "desktop": "~/Library/Application Support/Claude/local-agent-mode-sessions",
 }
 
-# Defaults per https://platform.claude.com/docs/en/about-claude/pricing
-# All rates are USD per 1M tokens. First matching pattern (substring on model id)
-# wins; last entry (empty pattern) is the catch-all fallback.
-PRICING_DEFAULTS = [
-    {"id": "opus-4-7",   "pattern": "opus-4-7",   "label": "Claude Opus 4.7",   "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
-    {"id": "opus-4-6",   "pattern": "opus-4-6",   "label": "Claude Opus 4.6",   "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
-    {"id": "opus-4-5",   "pattern": "opus-4-5",   "label": "Claude Opus 4.5",   "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
-    {"id": "opus-4-1",   "pattern": "opus-4-1",   "label": "Claude Opus 4.1",   "input": 15.0, "cache_5m": 18.75, "cache_1h": 30.0, "cache_hit": 1.50, "output": 75.0},
-    {"id": "opus-4",     "pattern": "opus-4",     "label": "Claude Opus 4",     "input": 15.0, "cache_5m": 18.75, "cache_1h": 30.0, "cache_hit": 1.50, "output": 75.0},
-    {"id": "sonnet-4-6", "pattern": "sonnet-4-6", "label": "Claude Sonnet 4.6", "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
-    {"id": "sonnet-4-5", "pattern": "sonnet-4-5", "label": "Claude Sonnet 4.5", "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
-    {"id": "sonnet-4",   "pattern": "sonnet-4",   "label": "Claude Sonnet 4",   "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
-    {"id": "haiku-4-5",  "pattern": "haiku-4-5",  "label": "Claude Haiku 4.5",  "input":  1.0, "cache_5m":  1.25, "cache_1h":  2.0, "cache_hit": 0.10, "output":  5.0},
-    {"id": "haiku-3-5",  "pattern": "haiku-3-5",  "label": "Claude Haiku 3.5",  "input":  0.80,"cache_5m":  1.0,  "cache_1h":  1.60,"cache_hit": 0.08, "output":  4.0},
-    {"id": "default",    "pattern": "",           "label": "Default fallback",  "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
-]
+# Pricing rates loaded from pricing.json. Filtered to Claude vendor so the
+# editor in this report only shows relevant models.
+PRICING_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pricing.json")
+
+
+def load_pricing(vendors: tuple[str, ...] = ("claude",)) -> list[dict]:
+    with open(PRICING_PATH) as f:
+        entries = json.load(f)["entries"]
+    if vendors:
+        vs = set(vendors)
+        entries = [e for e in entries if e.get("vendor") in vs]
+    if not any(e.get("pattern") == "" for e in entries):
+        entries.append({
+            "id": "fallback", "pattern": "", "label": "Default (Sonnet rates)",
+            "vendor": "claude",
+            "input": 3.0, "cache_5m": 3.75, "cache_1h": 6.0, "cache_hit": 0.30, "output": 15.0,
+        })
+    return entries
+
+
+PRICING_DEFAULTS = load_pricing(("claude",))
 
 
 # ── project helpers ────────────────────────────────────────────────────────
