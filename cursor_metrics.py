@@ -24,13 +24,64 @@ CURSOR_ROOT = os.path.expanduser("~/Library/Application Support/Cursor/User")
 GLOBAL_DB = os.path.join(CURSOR_ROOT, "globalStorage", "state.vscdb")
 WORKSPACE_ROOT = os.path.join(CURSOR_ROOT, "workspaceStorage")
 
-# Cursor doesn't expose per-turn token usage in the local DB. Per-model rates
-# kept here for parity with the Claude template; cost charts will be ~0 unless
-# the user manually inputs usage elsewhere.
+# Cursor's local DB does NOT persist per-turn input/output tokens
+# (tokenCount on every bubble is {0,0}). We estimate tokens from message
+# text length (~4 chars/token English heuristic) so cost charts have a value
+# of the right order of magnitude. Marked as "estimated" in the UI.
+#
+# Rates: USD per 1M tokens. First matching pattern (substring on model id)
+# wins; final empty-pattern entry is fallback. Cursor routes most "default"
+# / "Auto" requests through their own router so the true backing model is
+# unknown — we charge default at a mid-Sonnet rate as a compromise.
 PRICING_DEFAULTS = [
-    {"id": "default", "pattern": "", "label": "Cursor (unknown rate)",
-     "input": 0.0, "cache_5m": 0.0, "cache_1h": 0.0, "cache_hit": 0.0, "output": 0.0},
+    {"id": "opus-4-7",     "pattern": "opus-4-7",  "label": "Claude Opus 4.7",     "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
+    {"id": "opus-4-6",     "pattern": "opus-4-6",  "label": "Claude Opus 4.6",     "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
+    {"id": "opus-4",       "pattern": "opus",      "label": "Claude Opus (other)", "input": 15.0, "cache_5m": 18.75, "cache_1h": 30.0, "cache_hit": 1.50, "output": 75.0},
+    {"id": "sonnet-4-6",   "pattern": "sonnet-4-6","label": "Claude Sonnet 4.6",   "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
+    {"id": "sonnet-4-5",   "pattern": "sonnet-4-5","label": "Claude Sonnet 4.5",   "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
+    {"id": "sonnet",       "pattern": "sonnet",    "label": "Claude Sonnet (other)","input":  3.0,"cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
+    {"id": "haiku",        "pattern": "haiku",     "label": "Claude Haiku",        "input":  1.0, "cache_5m":  1.25, "cache_1h":  2.0, "cache_hit": 0.10, "output":  5.0},
+    {"id": "gpt-5",        "pattern": "gpt-5",     "label": "GPT-5",               "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.13, "output": 10.0},
+    {"id": "gpt-4o",       "pattern": "gpt-4o",    "label": "GPT-4o",              "input":  2.5, "cache_5m":  3.13, "cache_1h":  5.0, "cache_hit": 1.25, "output": 10.0},
+    {"id": "gpt-4",        "pattern": "gpt-4",     "label": "GPT-4 (other)",       "input":  2.5, "cache_5m":  3.13, "cache_1h":  5.0, "cache_hit": 1.25, "output": 10.0},
+    {"id": "gemini-2-5",   "pattern": "gemini-2.5","label": "Gemini 2.5 Pro",      "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.31, "output": 10.0},
+    {"id": "gemini",       "pattern": "gemini",    "label": "Gemini (other)",      "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.31, "output": 10.0},
+    {"id": "grok",         "pattern": "grok",      "label": "Grok",                "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.75, "output": 15.0},
+    {"id": "kimi",         "pattern": "kimi",      "label": "Kimi K2",             "input":  0.60,"cache_5m":  0.75, "cache_1h":  1.2, "cache_hit": 0.15, "output":  2.5},
+    {"id": "composer-2",   "pattern": "composer-2","label": "Composer 2 (Cursor)", "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.13, "output": 10.0},
+    {"id": "composer",     "pattern": "composer",  "label": "Composer (Cursor)",   "input":  1.25,"cache_5m":  1.56, "cache_1h":  2.5, "cache_hit": 0.13, "output": 10.0},
+    {"id": "default",      "pattern": "",          "label": "Auto/default (est.)", "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
 ]
+
+
+# ── token estimation ───────────────────────────────────────────────────────
+# Cursor doesn't log per-turn tokens locally, so we estimate from text length.
+# ~4 chars/token is the OpenAI/Anthropic rule of thumb for English text;
+# code/JSON skews slightly lower (3.5) — we use 4 as a round number.
+CHARS_PER_TOKEN = 4
+
+
+def estimate_tokens(text: str | None) -> int:
+    if not text:
+        return 0
+    return max(1, len(text) // CHARS_PER_TOKEN)
+
+
+def _tool_io_text(tf: dict) -> tuple[str, str]:
+    """Returns (args_text, result_text) for a toolFormerData blob."""
+    args = tf.get("rawArgs") or ""
+    if not args and tf.get("params"):
+        try:
+            args = json.dumps(tf["params"])
+        except Exception:
+            args = str(tf["params"])
+    result = tf.get("result") or ""
+    if isinstance(result, (dict, list)):
+        try:
+            result = json.dumps(result)
+        except Exception:
+            result = str(result)
+    return args, result
 
 
 # ── workspace mapping ──────────────────────────────────────────────────────
@@ -222,12 +273,74 @@ def parse_session(composer: dict, bubbles: list[dict], workspace: str) -> dict:
     end_time = max(timestamps) if timestamps else None
     duration_mins = (end_time - start_time).total_seconds() / 60 if start_time and end_time else 0
 
-    # token estimate: Cursor only exposes current-context size, not cumulative
-    ptb = composer.get("promptTokenBreakdown") or {}
-    total_tokens = ptb.get("totalUsedTokens", 0) or 0
+    # ── token estimation (Cursor stores tokenCount but values are always 0) ─
+    composer_model = ((composer.get("modelConfig") or {}).get("modelName")) or "default"
+    model_tokens: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0}
+    )
+    input_tokens = 0
+    output_tokens = 0
+    thinking_total_ms = 0
+    turn_total_ms = 0
+    request_ids: list[str] = []
+    models_seen: set[str] = set()
 
-    model_name = ((composer.get("modelConfig") or {}).get("modelName")) or "default"
-    models = [model_name] if model_name else []
+    for b in bubbles:
+        kind = _bubble_kind(b)
+        bubble_model = ((b.get("modelInfo") or {}).get("modelName")) or composer_model
+        models_seen.add(bubble_model)
+
+        rid = b.get("requestId")
+        if rid:
+            request_ids.append(rid)
+
+        if isinstance(b.get("thinkingDurationMs"), (int, float)):
+            thinking_total_ms += int(b["thinkingDurationMs"])
+        if isinstance(b.get("turnDurationMs"), (int, float)):
+            turn_total_ms += int(b["turnDurationMs"])
+
+        # Per-bubble persisted token count (almost always zero in local DB; trust if present)
+        tc = b.get("tokenCount") or {}
+        tc_in = tc.get("inputTokens", 0) or 0
+        tc_out = tc.get("outputTokens", 0) or 0
+
+        # Estimated tokens from text content
+        if kind == "user":
+            est_in = estimate_tokens(_bubble_text(b))
+            est_out = 0
+        elif kind == "tool":
+            tf = b.get("toolFormerData") or {}
+            args_text, result_text = _tool_io_text(tf)
+            est_in = estimate_tokens(result_text)
+            est_out = estimate_tokens(args_text)
+        elif kind == "thinking":
+            thinking = b.get("thinking") or {}
+            txt = thinking.get("text", "") if isinstance(thinking, dict) else ""
+            est_in = 0
+            est_out = estimate_tokens(txt)
+        else:  # assistant text
+            est_in = 0
+            est_out = estimate_tokens(_bubble_text(b))
+
+        # prefer DB values when nonzero, else fall back to estimate
+        u_in = tc_in if tc_in else est_in
+        u_out = tc_out if tc_out else est_out
+        input_tokens += u_in
+        output_tokens += u_out
+        mt = model_tokens[bubble_model]
+        mt["input"] += u_in
+        mt["output"] += u_out
+
+    # context size at session end (current-state only)
+    ptb = composer.get("promptTokenBreakdown") or {}
+    ctx_total_tokens = ptb.get("totalUsedTokens", 0) or 0
+    ctx_breakdown = {
+        c.get("id") or c.get("label", ""): c.get("estimatedTokens", 0)
+        for c in (ptb.get("categories") or [])
+        if isinstance(c, dict)
+    }
+
+    models = sorted(m for m in models_seen if m)
 
     # first user message
     first_user = next((b for b in bubbles if _bubble_kind(b) == "user"), None)
@@ -260,15 +373,21 @@ def parse_session(composer: dict, bubbles: list[dict], workspace: str) -> dict:
         "total_messages": user_count + asst_count + thinking_count,
         "tool_uses": len(tool_bubbles),
         "tool_counts": dict(tool_counts),
-        "input_tokens": 0,
-        "output_tokens": 0,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "cache_read_tokens": 0,
         "cache_creation_tokens": 0,
         "cache_5m_tokens": 0,
         "cache_1h_tokens": 0,
-        "total_tokens": total_tokens,
-        "model_tokens": {model_name: {"input": 0, "output": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0}} if model_name else {},
+        "total_tokens": input_tokens + output_tokens,
+        "model_tokens": {k: dict(v) for k, v in model_tokens.items()},
         "models": models,
+        "tokens_estimated": True,
+        "ctx_tokens": ctx_total_tokens,
+        "ctx_breakdown": ctx_breakdown,
+        "thinking_duration_ms": thinking_total_ms,
+        "turn_duration_ms": turn_total_ms,
+        "request_ids": request_ids,
         "avg_user_msg_len": avg_user_len,
         "first_user_msg_len": first_user_len,
         "first_user_msg_text": first_user_text,
@@ -418,6 +537,29 @@ def render_conversation_html(session: dict, bubbles: list[dict]) -> str:
     models_str = ", ".join(session.get("models", [])) or "—"
     dur = session["duration_mins"]
     total_tokens = session["total_tokens"]
+    in_tokens = session["input_tokens"]
+    out_tokens = session["output_tokens"]
+    ctx_tokens = session.get("ctx_tokens", 0)
+    ctx_breakdown = session.get("ctx_breakdown") or {}
+    thinking_ms = session.get("thinking_duration_ms", 0)
+    turn_ms = session.get("turn_duration_ms", 0)
+
+    def _fmt_ms(ms: int) -> str:
+        if not ms:
+            return "—"
+        s = ms / 1000
+        if s < 60:
+            return f"{s:.1f}s"
+        m, sec = divmod(int(s), 60)
+        return f"{m}m {sec}s"
+
+    ctx_html = "".join(
+        f'<div class="sp-row"><span class="sp-label">{html_mod.escape(k)}</span>'
+        f'<span class="sp-val">{v:,}</span></div>'
+        for k, v in sorted(ctx_breakdown.items(), key=lambda x: -x[1]) if v
+    ) or '<div class="sp-empty">No breakdown</div>'
+
+    denom_tok = max(total_tokens, 1)
 
     session_meta_json = json.dumps({
         "session_id": session["session_id"],
@@ -503,7 +645,7 @@ def render_conversation_html(session: dict, bubbles: list[dict]) -> str:
   <a class="back" href="../index.html" onclick="window.close();return false;">← back</a>
   <div class="hinfo">
     <h1>{title}</h1>
-    <p>{project} &nbsp;·&nbsp; {date} &nbsp;·&nbsp; {session['user_messages']}u / {session['assistant_messages']}a messages &nbsp;·&nbsp; {total_tokens:,} ctx tokens</p>
+    <p>{project} &nbsp;·&nbsp; {date} &nbsp;·&nbsp; {session['user_messages']}u / {session['assistant_messages']}a messages &nbsp;·&nbsp; ~{total_tokens:,} tokens (est.)</p>
   </div>
 </header>
 
@@ -552,9 +694,35 @@ def render_conversation_html(session: dict, bubbles: list[dict]) -> str:
       <div class="sp-row"><span class="sp-label">Lines removed</span><span class="sp-val amber">-{session['lines_removed']}</span></div>
     </div>
     <div class="sp-section">
-      <h4>Context</h4>
-      <div class="sp-row"><span class="sp-label">Last ctx tokens</span><span class="sp-val">{total_tokens:,}</span></div>
-      <div style="font-size:10px;color:var(--muted);margin-top:6px">Cursor doesn't log per-turn token usage locally; this is the most recent context size only.</div>
+      <h4>Tokens (estimated)</h4>
+      <div class="sp-row"><span class="sp-label">Total</span><span class="sp-val">{total_tokens:,}</span></div>
+      <div class="sp-bar-wrap">
+        <div class="sp-bar-label"><span>Input</span><span>{in_tokens:,}</span></div>
+        <div class="sp-bar"><div class="sp-bar-fill" style="width:{round(in_tokens/denom_tok*100)}%;background:#6366f1"></div></div>
+      </div>
+      <div class="sp-bar-wrap">
+        <div class="sp-bar-label"><span>Output</span><span>{out_tokens:,}</span></div>
+        <div class="sp-bar"><div class="sp-bar-fill" style="width:{round(out_tokens/denom_tok*100)}%;background:#10b981"></div></div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px">Cursor does not persist per-turn tokens locally. Values estimated at ~4 chars/token from message text. Treat cost as order-of-magnitude only.</div>
+    </div>
+    <div class="sp-section" id="costSection">
+      <h4>Estimated Cost</h4>
+      <div class="sp-row"><span class="sp-label">Total</span><span class="sp-val amber" id="costTotal">—</span></div>
+      <div id="costBreakdown" style="margin-top:8px"></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px">
+        Rates editable in main report → Regenerate tab. Tokens are estimates, so cost is too.
+      </div>
+    </div>
+    <div class="sp-section">
+      <h4>Latency</h4>
+      <div class="sp-row"><span class="sp-label">Thinking</span><span class="sp-val">{_fmt_ms(thinking_ms)}</span></div>
+      <div class="sp-row"><span class="sp-label">Turn</span><span class="sp-val">{_fmt_ms(turn_ms)}</span></div>
+    </div>
+    <div class="sp-section">
+      <h4>Context @ end</h4>
+      <div class="sp-row"><span class="sp-label">Total</span><span class="sp-val">{ctx_tokens:,}</span></div>
+      {ctx_html}
     </div>
     <div class="sp-section">
       <h4>Top Tools</h4>
@@ -632,6 +800,57 @@ function togglePanel() {{
 }}
 const SESSION_META = {session_meta_json};
 const PRICING_DEFAULTS = {pricing_json};
+const PRICING_LS_KEY = 'cursorReport.pricing';
+
+function loadPricing() {{
+  try {{
+    const stored = JSON.parse(localStorage.getItem(PRICING_LS_KEY));
+    if (Array.isArray(stored) && stored.length) return stored;
+  }} catch (e) {{}}
+  return PRICING_DEFAULTS;
+}}
+function pickRate(model, pricing) {{
+  for (const r of pricing) {{
+    if (r.pattern && model && model.includes(r.pattern)) return r;
+  }}
+  return pricing[pricing.length - 1];
+}}
+function modelCost(usage, rate) {{
+  return (
+    (usage.input      || 0) * (rate.input      || 0) +
+    (usage.output     || 0) * (rate.output     || 0) +
+    (usage.cache_read || 0) * (rate.cache_hit  || 0) +
+    (usage.cache_5m   || 0) * (rate.cache_5m   || 0) +
+    (usage.cache_1h   || 0) * (rate.cache_1h   || 0)
+  ) / 1e6;
+}}
+function fmtUSD(v) {{
+  if (v >= 1)   return '$' + v.toFixed(2);
+  if (v >= 0.01) return '$' + v.toFixed(3);
+  if (v > 0)    return '$' + v.toFixed(4);
+  return '$0.00';
+}}
+function renderCost() {{
+  const pricing = loadPricing();
+  const mt = SESSION_META.model_tokens || {{}};
+  let total = 0;
+  const rows = [];
+  Object.entries(mt).forEach(([model, u]) => {{
+    const r = pickRate(model, pricing);
+    const c = modelCost(u, r);
+    total += c;
+    rows.push({{model, label: r.label, cost: c}});
+  }});
+  const el = document.getElementById('costTotal');
+  if (!el) return;
+  el.textContent = fmtUSD(total);
+  const bd = document.getElementById('costBreakdown');
+  bd.innerHTML = rows.length
+    ? rows.map(r => `<div class="sp-row"><span class="sp-label" title="${{r.model}}">${{r.label}}</span><span class="sp-val">${{fmtUSD(r.cost)}}</span></div>`).join('')
+    : '<div class="sp-empty">No usage data</div>';
+}}
+renderCost();
+window.addEventListener('storage', e => {{ if (e.key === PRICING_LS_KEY) renderCost(); }});
 </script>
 </body>
 </html>"""

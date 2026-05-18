@@ -2,6 +2,7 @@
 *.html
 *.txt
 *.csv
-claude_report.html
+*/html
 claude_report_conversations/
+cursor_report_conversations/
 **/__pycache__/
