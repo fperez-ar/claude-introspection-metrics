@@ -4,4 +4,4 @@
 *.csv
 claude_report.html
 claude_report_conversations/
-__pycache__/
+**/__pycache__/

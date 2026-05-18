@@ -58,6 +58,36 @@ python3 claude_metrics.py --source desktop      # Claude Desktop only
 
 Running `--no-fetch` reuses existing `_conversations/` folder — regenerates only the top-level dashboard (fast iteration on chart code). Useful when you want to fetch only certain project or you want to delete other projects.
 
+## Tagging conversations (freeform tags + notes)
+
+Per-session freeform tags + notes persist in browser `localStorage` under key
+`claudeReport.tags`:
+
+```json
+{
+  "<session_id>": {
+    "tags": ["refactor", "wins"],
+    "notes": "ran out of context",
+    "updated_at": "2026-05-18T10:30:00+09:00"
+  }
+}
+```
+
+Edit anywhere:
+
+- Per-session viewer side panel — type a tag and hit Enter, click ✕ to remove,
+  notes auto-save on blur.
+- Dashboard sessions table — `+ tag` button per row prompts for a value; click
+  the ✕ on any pill to remove.
+
+Edits save instantly to `localStorage`; the **Top Tags** chart and the
+*Tag contains* advanced filter pick up changes on the next render. The
+dashboard also listens for cross-tab `storage` events, so edits in an open
+viewer reflect in the dashboard live.
+
+Caveat: storage is per-browser. Clearing site data wipes tags. Different
+machines / profiles see different tags. No server-side persistence by design.
+
 ## Outputs
 
 - `claude_report.html` — dashboard (token usage, tools, models, activity heatmap, cache efficiency).
@@ -72,3 +102,11 @@ Python ≥ 3.10. Stdlib only. See `requirements.txt`.
 - `claude_metrics.py` — scanner + report builder.
 - `report_template.html` — dashboard template with `__PLACEHOLDER__` slots.
 - `tests/` — `pytest tests/`.
+
+## Test coverage
+
+```bash
+python3 -m coverage run --source=claude_metrics -m pytest tests/ && python3 -m coverage report -m
+```
+
+`run --source=claude_metrics` records line hits while pytest executes; `report -m` prints the percentage plus missing line numbers. Requires `coverage` from `requirements.txt`.

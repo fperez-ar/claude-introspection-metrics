@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Generates an interactive HTML metrics report for all Claude Code conversations.
+Generates an interactive HTML metrics report for Claude conversations.
+Reads JSONL transcripts from Claude Code and/or Claude Desktop local-agent sessions.
 Also writes per-session chat log HTMLs to <output_stem>_conversations/.
 
 Usage:
-    python3 claude_metrics.py [project_path] [--output report.html]
-
-    project_path: path to filter by project (default: all projects)
-    --output:     output HTML file (default: claude_report.html)
+    python3 claude_metrics.py [project_path] [--output report.html] [--source both|code|desktop]
 """
 
 import json
@@ -21,6 +19,28 @@ from collections import defaultdict
 
 JST = timezone(timedelta(hours=9))
 
+SOURCES = {
+    "code": "~/.claude/projects",
+    "desktop": "~/Library/Application Support/Claude/local-agent-mode-sessions",
+}
+
+# Defaults per https://platform.claude.com/docs/en/about-claude/pricing
+# All rates are USD per 1M tokens. First matching pattern (substring on model id)
+# wins; last entry (empty pattern) is the catch-all fallback.
+PRICING_DEFAULTS = [
+    {"id": "opus-4-7",   "pattern": "opus-4-7",   "label": "Claude Opus 4.7",   "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
+    {"id": "opus-4-6",   "pattern": "opus-4-6",   "label": "Claude Opus 4.6",   "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
+    {"id": "opus-4-5",   "pattern": "opus-4-5",   "label": "Claude Opus 4.5",   "input":  5.0, "cache_5m": 6.25,  "cache_1h": 10.0, "cache_hit": 0.50, "output": 25.0},
+    {"id": "opus-4-1",   "pattern": "opus-4-1",   "label": "Claude Opus 4.1",   "input": 15.0, "cache_5m": 18.75, "cache_1h": 30.0, "cache_hit": 1.50, "output": 75.0},
+    {"id": "opus-4",     "pattern": "opus-4",     "label": "Claude Opus 4",     "input": 15.0, "cache_5m": 18.75, "cache_1h": 30.0, "cache_hit": 1.50, "output": 75.0},
+    {"id": "sonnet-4-6", "pattern": "sonnet-4-6", "label": "Claude Sonnet 4.6", "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
+    {"id": "sonnet-4-5", "pattern": "sonnet-4-5", "label": "Claude Sonnet 4.5", "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
+    {"id": "sonnet-4",   "pattern": "sonnet-4",   "label": "Claude Sonnet 4",   "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
+    {"id": "haiku-4-5",  "pattern": "haiku-4-5",  "label": "Claude Haiku 4.5",  "input":  1.0, "cache_5m":  1.25, "cache_1h":  2.0, "cache_hit": 0.10, "output":  5.0},
+    {"id": "haiku-3-5",  "pattern": "haiku-3-5",  "label": "Claude Haiku 3.5",  "input":  0.80,"cache_5m":  1.0,  "cache_1h":  1.60,"cache_hit": 0.08, "output":  4.0},
+    {"id": "default",    "pattern": "",           "label": "Default fallback",  "input":  3.0, "cache_5m":  3.75, "cache_1h":  6.0, "cache_hit": 0.30, "output": 15.0},
+]
+
 
 # ── project helpers ────────────────────────────────────────────────────────
 
@@ -29,16 +49,37 @@ def get_project_key(path: str) -> str:
     return os.path.abspath(path).replace("/", "-").lstrip("-")
 
 
-def find_jsonl_files(project_path: str | None = None) -> list[tuple[str, str]]:
-    """Returns list of (project_key, jsonl_path) tuples."""
-    base = os.path.expanduser("~/.claude/projects")
-    if project_path:
-        key = get_project_key(project_path)
-        return [(key, f) for f in glob.glob(os.path.join(base, key, "*.jsonl"))]
+def find_jsonl_files(
+    project_path: str | None = None,
+    sources: tuple[str, ...] = ("code", "desktop"),
+) -> list[tuple[str, str, str]]:
+    """Returns list of (source, project_key, jsonl_path) tuples."""
     results = []
-    for jsonl_path in glob.glob(os.path.join(base, "**", "*.jsonl"), recursive=True):
-        project_key = os.path.basename(os.path.dirname(jsonl_path))
-        results.append((project_key, jsonl_path))
+    key_filter = get_project_key(project_path) if project_path else None
+
+    for src in sources:
+        base = os.path.expanduser(SOURCES[src])
+        if not os.path.isdir(base):
+            continue
+
+        if src == "code":
+            if key_filter:
+                paths = glob.glob(os.path.join(base, key_filter, "*.jsonl"))
+            else:
+                paths = glob.glob(os.path.join(base, "**", "*.jsonl"), recursive=True)
+        else:  # desktop: nested under local_<id>/.claude/projects/<key>/...
+            paths = glob.glob(
+                os.path.join(base, "**", ".claude", "projects", "**", "*.jsonl"),
+                recursive=True,
+            )
+            if key_filter:
+                paths = [p for p in paths if f"{os.sep}projects{os.sep}{key_filter}{os.sep}" in p]
+
+        for p in paths:
+            if os.path.basename(p) == "audit.jsonl":
+                continue
+            project_key = os.path.basename(os.path.dirname(p))
+            results.append((src, project_key, p))
     return results
 
 
@@ -65,12 +106,36 @@ def parse_session(jsonl_path: str) -> dict:
             tool_uses.extend(c for c in content if isinstance(c, dict) and c.get("type") == "tool_use")
 
     input_tokens = output_tokens = cache_read_tokens = cache_creation_tokens = 0
+    cache_5m_tokens = cache_1h_tokens = 0
+    model_tokens: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0}
+    )
     for m in assistant_msgs:
-        usage = m.get("message", {}).get("usage", {})
-        input_tokens += usage.get("input_tokens", 0)
-        output_tokens += usage.get("output_tokens", 0)
-        cache_read_tokens += usage.get("cache_read_input_tokens", 0)
-        cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+        msg = m.get("message", {})
+        usage = msg.get("usage", {})
+        model = msg.get("model") or "unknown"
+        u_in = usage.get("input_tokens", 0)
+        u_out = usage.get("output_tokens", 0)
+        u_cr = usage.get("cache_read_input_tokens", 0)
+        u_cc = usage.get("cache_creation_input_tokens", 0)
+        cc_detail = usage.get("cache_creation") or {}
+        u_5m = cc_detail.get("ephemeral_5m_input_tokens", 0)
+        u_1h = cc_detail.get("ephemeral_1h_input_tokens", 0)
+        # if breakdown missing, attribute cache creation to 5m (API default TTL)
+        if not (u_5m or u_1h) and u_cc:
+            u_5m = u_cc
+        input_tokens += u_in
+        output_tokens += u_out
+        cache_read_tokens += u_cr
+        cache_creation_tokens += u_cc
+        cache_5m_tokens += u_5m
+        cache_1h_tokens += u_1h
+        mt = model_tokens[model]
+        mt["input"] += u_in
+        mt["output"] += u_out
+        mt["cache_read"] += u_cr
+        mt["cache_5m"] += u_5m
+        mt["cache_1h"] += u_1h
 
     timestamps = [
         datetime.fromisoformat(m["timestamp"].replace("Z", "+00:00")).astimezone(JST)
@@ -149,7 +214,10 @@ def parse_session(jsonl_path: str) -> dict:
         "output_tokens": output_tokens,
         "cache_read_tokens": cache_read_tokens,
         "cache_creation_tokens": cache_creation_tokens,
+        "cache_5m_tokens": cache_5m_tokens,
+        "cache_1h_tokens": cache_1h_tokens,
         "total_tokens": input_tokens + output_tokens,
+        "model_tokens": dict(model_tokens),
         "models": models,
         "avg_user_msg_len": round(avg_user_len),
         "first_user_msg_len": first_user_msg_len,
@@ -158,13 +226,17 @@ def parse_session(jsonl_path: str) -> dict:
     }
 
 
-def collect_all_metrics(project_path: str | None = None) -> list[dict]:
-    files = find_jsonl_files(project_path)
+def collect_all_metrics(
+    project_path: str | None = None,
+    sources: tuple[str, ...] = ("code", "desktop"),
+) -> list[dict]:
+    files = find_jsonl_files(project_path, sources)
     sessions = []
-    for project_key, jsonl_path in files:
+    for source, project_key, jsonl_path in files:
         try:
             metrics = parse_session(jsonl_path)
             metrics["project_key"] = project_key
+            metrics["source"] = source
             sessions.append(metrics)
         except Exception as e:
             print(f"Warning: failed to parse {jsonl_path}: {e}", file=sys.stderr)
@@ -331,6 +403,13 @@ def render_conversation_html(session: dict, turns: list[dict]) -> str:
     models_str = ", ".join(session.get("models", [])) or "—"
     dur = session["duration_mins"]
 
+    session_meta_json = json.dumps({
+        "session_id": session["session_id"],
+        "model_tokens": session.get("model_tokens", {}),
+        "models": session.get("models", []),
+    })
+    pricing_json = json.dumps(PRICING_DEFAULTS)
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -440,6 +519,22 @@ def render_conversation_html(session: dict, turns: list[dict]) -> str:
   .sp-bar{{height:5px;border-radius:3px;background:var(--surface2)}}
   .sp-bar-fill{{height:100%;border-radius:3px}}
   .sp-empty{{font-size:12px;color:var(--muted);font-style:italic}}
+  /* tag widget */
+  .tag-input-wrap{{margin-bottom:8px}}
+  .tag-input-wrap input,.tag-input-wrap textarea{{
+    width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);
+    border-radius:5px;padding:5px 8px;font-size:12px;outline:none;font-family:inherit
+  }}
+  .tag-input-wrap input:focus,.tag-input-wrap textarea:focus{{border-color:var(--accent2)}}
+  .tag-chips{{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}}
+  .tag-chip{{
+    display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 6px 2px 8px;
+    border-radius:10px;background:var(--surface2);border:1px solid var(--border);color:var(--text)
+  }}
+  .tag-chip .x{{cursor:pointer;color:var(--muted);font-weight:600}}
+  .tag-chip .x:hover{{color:var(--accent)}}
+  #tagStatus{{font-size:11px;color:var(--muted);margin-top:6px;min-height:14px}}
+  #tagStatus.ok{{color:var(--green)}}
 </style>
 </head>
 <body>
@@ -483,6 +578,7 @@ def render_conversation_html(session: dict, turns: list[dict]) -> str:
     </div>
     <div class="sp-section">
       <h4>Messages</h4>
+      <div class="sp-row"><span class="sp-label">Total</span><span class="sp-val">{session['total_messages']}</span></div>
       <div class="sp-row"><span class="sp-label">User</span><span class="sp-val amber">{session['user_messages']}</span></div>
       <div class="sp-row"><span class="sp-label">Assistant</span><span class="sp-val indigo">{session['assistant_messages']}</span></div>
       <div class="sp-row"><span class="sp-label">Tool calls</span><span class="sp-val green">{session['tool_uses']}</span></div>
@@ -503,6 +599,25 @@ def render_conversation_html(session: dict, turns: list[dict]) -> str:
         <div class="sp-bar"><div class="sp-bar-fill" style="width:{round(session['cache_read_tokens']/max(denom,1)*100)}%;background:#d97706"></div></div>
       </div>
       <div class="sp-row" style="margin-top:6px"><span class="sp-label">Cache efficiency</span><span class="sp-val green">{cache_eff}%</span></div>
+    </div>
+    <div class="sp-section" id="costSection">
+      <h4>Estimated Cost</h4>
+      <div class="sp-row"><span class="sp-label">Total</span><span class="sp-val amber" id="costTotal">—</span></div>
+      <div id="costBreakdown" style="margin-top:8px"></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px">
+        Rates editable in main report → Regenerate tab.
+      </div>
+    </div>
+    <div class="sp-section" id="tagsSection">
+      <h4>Tags</h4>
+      <div class="tag-input-wrap">
+        <input id="tagInput" type="text" placeholder="Add tag, press Enter…">
+        <div class="tag-chips" id="tagChips"></div>
+      </div>
+      <div class="tag-input-wrap">
+        <textarea id="notesInput" rows="2" placeholder="Notes…"></textarea>
+      </div>
+      <div id="tagStatus"></div>
     </div>
     <div class="sp-section">
       <h4>Top Tools</h4>
@@ -601,6 +716,131 @@ function togglePanel() {{
   btn.classList.toggle('active', !hidden);
   btn.textContent = hidden ? '⊞ Metrics' : '⊟ Metrics';
 }}
+
+// ── cost estimate ──────────────────────────────────────────────────────────
+const SESSION_META = {session_meta_json};
+const PRICING_DEFAULTS = {pricing_json};
+const PRICING_LS_KEY = 'claudeReport.pricing';
+
+function loadPricing() {{
+  try {{
+    const stored = JSON.parse(localStorage.getItem(PRICING_LS_KEY));
+    if (Array.isArray(stored) && stored.length) return stored;
+  }} catch (e) {{}}
+  return PRICING_DEFAULTS;
+}}
+function pickRate(model, pricing) {{
+  for (const r of pricing) {{
+    if (r.pattern && model && model.includes(r.pattern)) return r;
+  }}
+  return pricing[pricing.length - 1];
+}}
+function modelCost(usage, rate) {{
+  return (
+    (usage.input      || 0) * (rate.input      || 0) +
+    (usage.output     || 0) * (rate.output     || 0) +
+    (usage.cache_read || 0) * (rate.cache_hit  || 0) +
+    (usage.cache_5m   || 0) * (rate.cache_5m   || 0) +
+    (usage.cache_1h   || 0) * (rate.cache_1h   || 0)
+  ) / 1e6;
+}}
+function fmtUSD(v) {{
+  if (v >= 1)   return '$' + v.toFixed(2);
+  if (v >= 0.01) return '$' + v.toFixed(3);
+  if (v > 0)    return '$' + v.toFixed(4);
+  return '$0.00';
+}}
+function renderCost() {{
+  const pricing = loadPricing();
+  const mt = SESSION_META.model_tokens || {{}};
+  let total = 0;
+  const rows = [];
+  Object.entries(mt).forEach(([model, u]) => {{
+    const r = pickRate(model, pricing);
+    const c = modelCost(u, r);
+    total += c;
+    rows.push({{model, label: r.label, cost: c}});
+  }});
+  document.getElementById('costTotal').textContent = fmtUSD(total);
+  const bd = document.getElementById('costBreakdown');
+  bd.innerHTML = rows.length
+    ? rows.map(r => `<div class="sp-row"><span class="sp-label" title="${{r.model}}">${{r.label}}</span><span class="sp-val">${{fmtUSD(r.cost)}}</span></div>`).join('')
+    : '<div class="sp-empty">No usage data</div>';
+}}
+renderCost();
+window.addEventListener('storage', e => {{ if (e.key === PRICING_LS_KEY) renderCost(); }});
+
+// ── tag widget ─────────────────────────────────────────────────────────────
+
+const TAGS_LS_KEY = 'claudeReport.tags';
+
+function loadAllTags() {{
+  try {{ return JSON.parse(localStorage.getItem(TAGS_LS_KEY)) || {{}}; }}
+  catch (e) {{ return {{}}; }}
+}}
+function saveAllTags(m) {{ localStorage.setItem(TAGS_LS_KEY, JSON.stringify(m)); }}
+
+(function initTags() {{
+  const all = loadAllTags();
+  const entry = all[SESSION_META.session_id] || {{tags: [], notes: ''}};
+  let tags = (entry.tags || []).slice();
+  let notes = entry.notes || '';
+
+  const chipsEl = document.getElementById('tagChips');
+  const inputEl = document.getElementById('tagInput');
+  const notesEl = document.getElementById('notesInput');
+  const statusEl = document.getElementById('tagStatus');
+
+  notesEl.value = notes;
+
+  function escapeHtml(s) {{
+    return String(s).replace(/[&<>"']/g, c => (
+      {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c]);
+  }}
+  function paintChips() {{
+    chipsEl.innerHTML = '';
+    tags.forEach((t, i) => {{
+      const chip = document.createElement('span');
+      chip.className = 'tag-chip';
+      chip.innerHTML = `${{escapeHtml(t)}} <span class="x" data-i="${{i}}">×</span>`;
+      chipsEl.appendChild(chip);
+    }});
+  }}
+  function persist() {{
+    const m = loadAllTags();
+    if (tags.length === 0 && !notes) delete m[SESSION_META.session_id];
+    else m[SESSION_META.session_id] = {{tags: tags, notes: notes, updated_at: new Date().toISOString()}};
+    saveAllTags(m);
+    statusEl.className = 'ok';
+    statusEl.textContent = 'Saved';
+    clearTimeout(persist._t);
+    persist._t = setTimeout(() => {{ statusEl.textContent = ''; statusEl.className = ''; }}, 1200);
+  }}
+
+  paintChips();
+
+  inputEl.addEventListener('keydown', e => {{
+    if (e.key === 'Enter') {{
+      e.preventDefault();
+      const v = inputEl.value.trim();
+      if (v && !tags.includes(v)) {{ tags.push(v); paintChips(); persist(); }}
+      inputEl.value = '';
+    }}
+  }});
+  chipsEl.addEventListener('click', e => {{
+    const x = e.target.closest('.x');
+    if (!x) return;
+    tags.splice(parseInt(x.dataset.i, 10), 1);
+    paintChips();
+    persist();
+  }});
+  let notesTimer = null;
+  notesEl.addEventListener('input', () => {{
+    notes = notesEl.value;
+    clearTimeout(notesTimer);
+    notesTimer = setTimeout(persist, 400);
+  }});
+}})();
 </script>
 </body>
 </html>"""
@@ -622,7 +862,12 @@ def build_report_html(sessions: list[dict], conv_dir_name: str) -> str:
 
     # strip jsonl_path from data sent to browser (not needed)
     sessions_js = [{k: v for k, v in s.items() if k != "jsonl_path"} for s in sessions]
-    data_json = json.dumps({"sessions": sessions_js, "projects": projects, "convDir": conv_dir_name})
+    data_json = json.dumps({
+        "sessions": sessions_js,
+        "projects": projects,
+        "convDir": conv_dir_name,
+        "pricingDefaults": PRICING_DEFAULTS,
+    })
 
     template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_template.html")
     with open(template_path) as tf:
@@ -646,7 +891,11 @@ def main():
     parser.add_argument("--output", default="claude_report.html", help="Output HTML file")
     parser.add_argument("--no-fetch", action="store_true",
                         help="Skip writing per-session conversation HTMLs; reuse existing folder")
+    parser.add_argument("--source", choices=["both", "code", "desktop"], default="both",
+                        help="Which transcript source(s) to scan (default: both)")
     args = parser.parse_args()
+
+    sources = ("code", "desktop") if args.source == "both" else (args.source,)
 
     output_path = os.path.abspath(args.output)
     output_dir = os.path.dirname(output_path)
@@ -654,8 +903,9 @@ def main():
     conv_dir = os.path.join(output_dir, f"{output_stem}_conversations")
     conv_dir_name = f"{output_stem}_conversations"
 
-    print("Scanning ~/.claude/projects/...", file=sys.stderr)
-    sessions = collect_all_metrics(args.project)
+    scan_paths = ", ".join(SOURCES[s] for s in sources)
+    print(f"Scanning: {scan_paths}", file=sys.stderr)
+    sessions = collect_all_metrics(args.project, sources)
 
     if not sessions:
         print("No conversations found.", file=sys.stderr)

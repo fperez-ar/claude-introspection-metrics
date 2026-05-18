@@ -35,39 +35,114 @@ class TestGetProjectKey:
 
 # ── find_jsonl_files ───────────────────────────────────────────────────────
 
+def _patch_sources(monkeypatch, tmp_path, code=True, desktop=True):
+    """Point SOURCES at tmp_path subdirs. Returns (code_base, desktop_base)."""
+    code_base = tmp_path / "code_projects"
+    desktop_base = tmp_path / "desktop_sessions"
+    src = {}
+    if code:
+        src["code"] = str(code_base)
+    if desktop:
+        src["desktop"] = str(desktop_base)
+    monkeypatch.setattr(cm, "SOURCES", src)
+    # bypass expanduser since we pass absolute tmp paths
+    monkeypatch.setattr(os.path, "expanduser", lambda p: p)
+    return code_base, desktop_base
+
+
 class TestFindJsonlFiles:
     def test_filter_by_project(self, tmp_path, monkeypatch):
+        code_base, _ = _patch_sources(monkeypatch, tmp_path, desktop=False)
         proj = tmp_path / "myproj"
         proj.mkdir()
-        base = tmp_path / ".claude" / "projects"
         key = cm.get_project_key(str(proj))
-        (base / key).mkdir(parents=True)
-        f1 = base / key / "s1.jsonl"
-        f1.write_text("")
-        (base / "other").mkdir()
-        (base / "other" / "s2.jsonl").write_text("")
+        (code_base / key).mkdir(parents=True)
+        (code_base / key / "s1.jsonl").write_text("")
+        (code_base / "other").mkdir()
+        (code_base / "other" / "s2.jsonl").write_text("")
 
-        monkeypatch.setattr(os.path, "expanduser", lambda p: str(base) if p == "~/.claude/projects" else p)
-        result = cm.find_jsonl_files(str(proj))
+        result = cm.find_jsonl_files(str(proj), sources=("code",))
         assert len(result) == 1
-        assert result[0][0] == key
-        assert result[0][1].endswith("s1.jsonl")
+        assert result[0] == ("code", key, str(code_base / key / "s1.jsonl"))
 
     def test_all_projects(self, tmp_path, monkeypatch):
-        base = tmp_path / ".claude" / "projects"
-        (base / "p1").mkdir(parents=True)
-        (base / "p2").mkdir()
-        (base / "p1" / "a.jsonl").write_text("")
-        (base / "p2" / "b.jsonl").write_text("")
+        code_base, _ = _patch_sources(monkeypatch, tmp_path, desktop=False)
+        (code_base / "p1").mkdir(parents=True)
+        (code_base / "p2").mkdir()
+        (code_base / "p1" / "a.jsonl").write_text("")
+        (code_base / "p2" / "b.jsonl").write_text("")
 
-        monkeypatch.setattr(os.path, "expanduser", lambda p: str(base) if p == "~/.claude/projects" else p)
-        result = cm.find_jsonl_files(None)
-        keys = sorted(k for k, _ in result)
+        result = cm.find_jsonl_files(None, sources=("code",))
+        keys = sorted(k for _, k, _ in result)
         assert keys == ["p1", "p2"]
+        assert all(s == "code" for s, _, _ in result)
 
     def test_no_files(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / "missing") if p == "~/.claude/projects" else p)
-        assert cm.find_jsonl_files(None) == []
+        _patch_sources(monkeypatch, tmp_path, desktop=False)
+        assert cm.find_jsonl_files(None, sources=("code",)) == []
+
+    # ── multi-source ───────────────────────────────────────────────────────
+
+    def test_desktop_only(self, tmp_path, monkeypatch):
+        _, desktop_base = _patch_sources(monkeypatch, tmp_path, code=False)
+        sess = desktop_base / "agent1" / "run1" / "local_xyz" / ".claude" / "projects" / "myproj"
+        sess.mkdir(parents=True)
+        (sess / "session-1.jsonl").write_text("")
+
+        result = cm.find_jsonl_files(None, sources=("desktop",))
+        assert len(result) == 1
+        src, key, path = result[0]
+        assert src == "desktop"
+        assert key == "myproj"
+        assert path.endswith("session-1.jsonl")
+
+    def test_desktop_skips_audit_jsonl(self, tmp_path, monkeypatch):
+        _, desktop_base = _patch_sources(monkeypatch, tmp_path, code=False)
+        local = desktop_base / "a" / "b" / "local_x"
+        (local).mkdir(parents=True)
+        (local / "audit.jsonl").write_text("")  # outside projects/, ignored anyway
+        sess = local / ".claude" / "projects" / "p"
+        sess.mkdir(parents=True)
+        (sess / "real.jsonl").write_text("")
+        (sess / "audit.jsonl").write_text("")  # inside, must be skipped
+
+        result = cm.find_jsonl_files(None, sources=("desktop",))
+        names = sorted(os.path.basename(p) for _, _, p in result)
+        assert names == ["real.jsonl"]
+
+    def test_both_sources_default(self, tmp_path, monkeypatch):
+        code_base, desktop_base = _patch_sources(monkeypatch, tmp_path)
+        (code_base / "p").mkdir(parents=True)
+        (code_base / "p" / "c.jsonl").write_text("")
+        sess = desktop_base / "a" / "b" / "local_x" / ".claude" / "projects" / "q"
+        sess.mkdir(parents=True)
+        (sess / "d.jsonl").write_text("")
+
+        result = cm.find_jsonl_files(None)  # default both
+        srcs = sorted(s for s, _, _ in result)
+        assert srcs == ["code", "desktop"]
+
+    def test_missing_source_dir_skipped(self, tmp_path, monkeypatch):
+        # desktop dir absent — should not raise
+        _patch_sources(monkeypatch, tmp_path, code=False)
+        # don't create desktop_base
+        assert cm.find_jsonl_files(None, sources=("desktop",)) == []
+
+    def test_desktop_project_filter(self, tmp_path, monkeypatch):
+        _, desktop_base = _patch_sources(monkeypatch, tmp_path, code=False)
+        proj = tmp_path / "wanted"
+        proj.mkdir()
+        key = cm.get_project_key(str(proj))
+        s1 = desktop_base / "a" / "b" / "local_x" / ".claude" / "projects" / key
+        s1.mkdir(parents=True)
+        (s1 / "match.jsonl").write_text("")
+        s2 = desktop_base / "a" / "b" / "local_x" / ".claude" / "projects" / "other"
+        s2.mkdir(parents=True)
+        (s2 / "skip.jsonl").write_text("")
+
+        result = cm.find_jsonl_files(str(proj), sources=("desktop",))
+        names = [os.path.basename(p) for _, _, p in result]
+        assert names == ["match.jsonl"]
 
 
 # ── load_messages ──────────────────────────────────────────────────────────
@@ -272,31 +347,47 @@ class TestParseSession:
 
 class TestCollectAllMetrics:
     def test_sorts_by_start_time(self, tmp_path, monkeypatch):
-        base = tmp_path / ".claude" / "projects" / "proj"
-        base.mkdir(parents=True)
-        later = base / "later.jsonl"
-        earlier = base / "earlier.jsonl"
-        later.write_text(json.dumps({"type": "user", "message": {"content": "x"}, "timestamp": "2026-02-01T00:00:00Z"}))
-        earlier.write_text(json.dumps({"type": "user", "message": {"content": "x"}, "timestamp": "2026-01-01T00:00:00Z"}))
+        code_base, _ = _patch_sources(monkeypatch, tmp_path, desktop=False)
+        proj = code_base / "proj"
+        proj.mkdir(parents=True)
+        (proj / "later.jsonl").write_text(json.dumps({"type": "user", "message": {"content": "x"}, "timestamp": "2026-02-01T00:00:00Z"}))
+        (proj / "earlier.jsonl").write_text(json.dumps({"type": "user", "message": {"content": "x"}, "timestamp": "2026-01-01T00:00:00Z"}))
 
-        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / ".claude" / "projects") if p == "~/.claude/projects" else p)
-        sessions = cm.collect_all_metrics(None)
+        sessions = cm.collect_all_metrics(None, sources=("code",))
         ids = [s["session_id"] for s in sessions]
         assert ids == ["earlier", "later"]
         assert all(s["project_key"] == "proj" for s in sessions)
+        assert all(s["source"] == "code" for s in sessions)
 
     def test_continues_on_parse_error(self, tmp_path, monkeypatch, capsys):
-        base = tmp_path / ".claude" / "projects" / "p"
-        base.mkdir(parents=True)
-        (base / "good.jsonl").write_text(json.dumps({"type": "user", "message": {"content": "x"}, "timestamp": "2026-01-01T00:00:00Z"}))
-        (base / "bad.jsonl").write_text("not json\n")
+        code_base, _ = _patch_sources(monkeypatch, tmp_path, desktop=False)
+        proj = code_base / "p"
+        proj.mkdir(parents=True)
+        (proj / "good.jsonl").write_text(json.dumps({"type": "user", "message": {"content": "x"}, "timestamp": "2026-01-01T00:00:00Z"}))
+        (proj / "bad.jsonl").write_text("not json\n")
 
-        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / ".claude" / "projects") if p == "~/.claude/projects" else p)
-        sessions = cm.collect_all_metrics(None)
+        sessions = cm.collect_all_metrics(None, sources=("code",))
         assert len(sessions) == 1
         assert sessions[0]["session_id"] == "good"
         err = capsys.readouterr().err
         assert "Warning" in err and "bad.jsonl" in err
+
+    def test_tags_source_per_session(self, tmp_path, monkeypatch):
+        code_base, desktop_base = _patch_sources(monkeypatch, tmp_path)
+        (code_base / "p").mkdir(parents=True)
+        (code_base / "p" / "c.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"content": "x"}, "timestamp": "2026-01-01T00:00:00Z"})
+        )
+        dsess = desktop_base / "a" / "b" / "local_x" / ".claude" / "projects" / "q"
+        dsess.mkdir(parents=True)
+        (dsess / "d.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"content": "y"}, "timestamp": "2026-01-02T00:00:00Z"})
+        )
+
+        sessions = cm.collect_all_metrics(None)
+        by_id = {s["session_id"]: s for s in sessions}
+        assert by_id["c"]["source"] == "code"
+        assert by_id["d"]["source"] == "desktop"
 
 
 # ── _content_to_parts ──────────────────────────────────────────────────────
@@ -449,3 +540,213 @@ class TestRenderConversationHtml:
                   "parts": [{"type": "text", "text": "hi"}]}]
         html = cm.render_conversation_html(session, turns)
         assert "hi" in html
+
+
+# ── tags feature (browser-side localStorage; Python side has no schema) ────
+
+import re
+
+
+def _extract_data_json(html: str) -> dict:
+    """Pull the DATA = {...} payload out of the built dashboard HTML."""
+    m = re.search(r'const DATA = (\{.*?\});', html)
+    assert m, "DATA literal not found in dashboard HTML"
+    return json.loads(m.group(1))
+
+
+class TestParseSessionNoTagSidecarFields:
+    def test_parse_session_has_no_tag_fields(self, tmp_path):
+        # tags live in browser localStorage; the Python parse path must not
+        # emit success/tags/notes/jsonl_dir keys.
+        path = _make_jsonl(tmp_path, [])
+        s = cm.parse_session(path)
+        for k in ("success", "tags", "notes", "jsonl_dir"):
+            assert k not in s, f"unexpected key {k!r} in parse_session output"
+
+    def test_no_sidecar_loader_exists(self):
+        # Defensive: the sidecar loader was removed when storage moved to
+        # browser localStorage. Calling it should fail loudly.
+        assert not hasattr(cm, "load_tags_sidecar")
+
+
+class TestBuildReportHtmlTagsUI:
+    def _sessions(self):
+        return [
+            _full_session(
+                session_id="a", jsonl_path="/var/jsonls/a.jsonl",
+                project_key="proj1", source="code",
+            ),
+            _full_session(
+                session_id="b", jsonl_path="/var/jsonls/b.jsonl",
+                project_key="proj1", source="code",
+            ),
+        ]
+
+    def test_data_json_strips_jsonl_path(self):
+        html = cm.build_report_html(self._sessions(), "convs")
+        data = _extract_data_json(html)
+        for s in data["sessions"]:
+            assert "jsonl_path" not in s
+            assert "jsonl_dir" not in s
+
+    def test_template_renders_tags_chart_and_filter(self):
+        html = cm.build_report_html(self._sessions(), "convs")
+        assert "tagsChart" in html
+        assert 'id="fTag"' in html
+
+    def test_template_drops_success_widgets(self):
+        # No star rating UI; no success charts/filter must survive.
+        html = cm.build_report_html(self._sessions(), "convs")
+        assert "successDistChart" not in html
+        assert "successTrendChart" not in html
+        assert 'id="fSuccessMin"' not in html
+        assert "starWidget" not in html
+
+    def test_template_uses_localstorage_key(self):
+        html = cm.build_report_html(self._sessions(), "convs")
+        assert "claudeReport.tags" in html
+        # FS Access bridge was removed.
+        assert "showDirectoryPicker" not in html
+
+
+class TestRenderConversationHtmlTagsWidget:
+    def test_viewer_has_tag_input_no_stars(self):
+        session = _full_session()
+        turns = []
+        html = cm.render_conversation_html(session, turns)
+        assert 'id="tagInput"' in html
+        assert "claudeReport.tags" in html
+        # star UI removed
+        assert 'id="starWidget"' not in html
+        # FS Access bridge removed
+        assert "showDirectoryPicker" not in html
+
+
+# ── main() CLI smoke ───────────────────────────────────────────────────────
+
+class TestMain:
+    """End-to-end smoke tests for the main() entrypoint.
+
+    Invokes main() in-process (preserving coverage instrumentation) with
+    SOURCES patched to a tmp tree and sys.argv set accordingly.
+    """
+
+    def _seed_code_session(self, tmp_path, monkeypatch):
+        code_base, _ = _patch_sources(monkeypatch, tmp_path, desktop=False)
+        proj = code_base / "smoke"
+        proj.mkdir(parents=True)
+        msgs = [
+            {"type": "user", "message": {"content": "hello"},
+             "timestamp": "2026-01-01T00:00:00Z", "cwd": "/work/smoke"},
+            {"type": "assistant", "message": {
+                "content": [{"type": "text", "text": "hi back"}],
+                "model": "claude-opus-4-7",
+                "usage": {"input_tokens": 5, "output_tokens": 3},
+            }, "timestamp": "2026-01-01T00:00:30Z"},
+        ]
+        (proj / "smoke-1.jsonl").write_text("\n".join(json.dumps(m) for m in msgs))
+        return code_base
+
+    def test_writes_report_and_conversation(self, tmp_path, monkeypatch, capsys):
+        self._seed_code_session(tmp_path, monkeypatch)
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        output = out_dir / "report.html"
+        monkeypatch.setattr(sys, "argv", [
+            "claude_metrics.py", "--output", str(output), "--source", "code",
+        ])
+
+        cm.main()
+
+        assert output.exists()
+        report_html = output.read_text()
+        assert "<!DOCTYPE html>" in report_html
+        assert "smoke" in report_html  # project name appears
+
+        conv_dir = out_dir / "report_conversations"
+        assert conv_dir.is_dir()
+        conv_files = list(conv_dir.glob("*.html"))
+        assert len(conv_files) == 1
+        assert conv_files[0].name == "smoke-1.html"
+        assert "<!DOCTYPE html>" in conv_files[0].read_text()
+
+        err = capsys.readouterr().err
+        assert "Found 1 sessions" in err
+        assert "Report:" in err
+
+    def test_no_sessions_exits_1(self, tmp_path, monkeypatch, capsys):
+        _patch_sources(monkeypatch, tmp_path, desktop=False)
+        output = tmp_path / "empty.html"
+        monkeypatch.setattr(sys, "argv", [
+            "claude_metrics.py", "--output", str(output), "--source", "code",
+        ])
+
+        with pytest.raises(SystemExit) as ei:
+            cm.main()
+        assert ei.value.code == 1
+        assert "No conversations found" in capsys.readouterr().err
+        assert not output.exists()
+
+    def test_no_fetch_missing_conv_dir_exits_1(self, tmp_path, monkeypatch, capsys):
+        self._seed_code_session(tmp_path, monkeypatch)
+        output = tmp_path / "out" / "report.html"
+        output.parent.mkdir()
+        monkeypatch.setattr(sys, "argv", [
+            "claude_metrics.py", "--output", str(output),
+            "--source", "code", "--no-fetch",
+        ])
+
+        with pytest.raises(SystemExit) as ei:
+            cm.main()
+        assert ei.value.code == 1
+        err = capsys.readouterr().err
+        assert "--no-fetch requires existing conversation folder" in err
+
+    def test_no_fetch_reuses_existing_conv_dir(self, tmp_path, monkeypatch, capsys):
+        self._seed_code_session(tmp_path, monkeypatch)
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        conv_dir = out_dir / "report_conversations"
+        conv_dir.mkdir()
+        stub = conv_dir / "smoke-1.html"
+        stub.write_text("<!-- pre-existing stub -->")
+        output = out_dir / "report.html"
+        monkeypatch.setattr(sys, "argv", [
+            "claude_metrics.py", "--output", str(output),
+            "--source", "code", "--no-fetch",
+        ])
+
+        cm.main()
+
+        assert output.exists()
+        # --no-fetch must leave the existing conv HTML untouched
+        assert stub.read_text() == "<!-- pre-existing stub -->"
+        err = capsys.readouterr().err
+        assert "Reusing existing conversation logs" in err
+
+    def test_project_filter_argument(self, tmp_path, monkeypatch, capsys):
+        code_base, _ = _patch_sources(monkeypatch, tmp_path, desktop=False)
+        wanted = tmp_path / "wanted"
+        wanted.mkdir()
+        key = cm.get_project_key(str(wanted))
+        (code_base / key).mkdir(parents=True)
+        (code_base / key / "w.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"content": "x"},
+                        "timestamp": "2026-01-01T00:00:00Z"})
+        )
+        (code_base / "other").mkdir()
+        (code_base / "other" / "o.jsonl").write_text(
+            json.dumps({"type": "user", "message": {"content": "y"},
+                        "timestamp": "2026-01-01T00:00:00Z"})
+        )
+        output = tmp_path / "filtered.html"
+        monkeypatch.setattr(sys, "argv", [
+            "claude_metrics.py", str(wanted),
+            "--output", str(output), "--source", "code",
+        ])
+
+        cm.main()
+
+        assert "Found 1 sessions" in capsys.readouterr().err
+        conv_dir = tmp_path / "filtered_conversations"
+        assert {p.name for p in conv_dir.glob("*.html")} == {"w.html"}

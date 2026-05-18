@@ -1,2 +1,10 @@
 # claude_metrics.py uses Python standard library only.
 # Python >= 3.10 required (uses PEP 604 union types).
+
+# prompt_analysis.py extras (only needed with --cluster):
+sentence-transformers
+bertopic
+
+# dev / test
+pytest>=8
+coverage>=7
